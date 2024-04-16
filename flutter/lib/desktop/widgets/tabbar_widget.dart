@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math';
 import 'dart:ui' as ui;
 
@@ -165,7 +164,8 @@ class DesktopTabController {
         }));
       }
     });
-    if ((isDesktop && bind.isQs()) || callOnSelected) {
+    if ((isDesktop && (bind.isIncomingOnly() || bind.isOutgoingOnly())) ||
+        callOnSelected) {
       if (state.value.tabs.length > index) {
         final key = state.value.tabs[index].key;
         onSelected?.call(key);
@@ -374,7 +374,8 @@ class DesktopTab extends StatelessWidget {
         Expanded(
             child: GestureDetector(
                 // custom double tap handler
-                onTap: showMaximize
+                onTap: !(bind.isIncomingOnly() && isInHomePage()) &&
+                        showMaximize
                     ? () {
                         final current = DateTime.now().millisecondsSinceEpoch;
                         final elapsed = current - _lastClickTime;
@@ -390,16 +391,16 @@ class DesktopTab extends StatelessWidget {
                 child: Row(
                   children: [
                     Offstage(
-                        offstage: !Platform.isMacOS,
+                        offstage: !isMacOS,
                         child: const SizedBox(
                           width: 78,
                         )),
                     Offstage(
-                      offstage: kUseCompatibleUiMode || Platform.isMacOS,
+                      offstage: kUseCompatibleUiMode || isMacOS,
                       child: Row(children: [
                         Offstage(
                           offstage: !showLogo,
-                          child: loadLogo(16),
+                          child: loadIcon(16),
                         ),
                         Offstage(
                             offstage: !showTitle,
@@ -582,8 +583,8 @@ class WindowActionPanelState extends State<WindowActionPanel>
     mainWindowClose() async => await windowManager.hide();
     notMainWindowClose(WindowController controller) async {
       if (widget.tabController.length != 0) {
-        debugPrint("close not emtpy multiwindow from taskbar");
-        if (Platform.isWindows) {
+        debugPrint("close not empty multiwindow from taskbar");
+        if (isWindows) {
           await controller.show();
           await controller.focus();
           final res = await widget.onClose?.call() ?? true;
@@ -618,7 +619,7 @@ class WindowActionPanelState extends State<WindowActionPanel>
         await rustDeskWinManager.unregisterActiveWindow(kMainWindowId);
       }
       // macOS specific workaround, the window is not hiding when in fullscreen.
-      if (Platform.isMacOS && await windowManager.isFullScreen()) {
+      if (isMacOS && await windowManager.isFullScreen()) {
         stateGlobal.closeOnFullscreen ??= true;
         await windowManager.setFullScreen(false);
         await macOSWindowClose(
@@ -632,7 +633,7 @@ class WindowActionPanelState extends State<WindowActionPanel>
     } else {
       // it's safe to hide the subwindow
       final controller = WindowController.fromWindowId(kWindowId!);
-      if (Platform.isMacOS) {
+      if (isMacOS) {
         // onWindowClose() maybe called multiple times because of loopCloseWindow() in remote_tab_page.dart.
         // use ??=  to make sure the value is set on first call.
 
@@ -668,7 +669,7 @@ class WindowActionPanelState extends State<WindowActionPanel>
           child: Row(
             children: [
               Offstage(
-                  offstage: !widget.showMinimize || Platform.isMacOS,
+                  offstage: !widget.showMinimize || isMacOS,
                   child: ActionIcon(
                     message: 'Minimize',
                     icon: IconFont.min,
@@ -682,7 +683,7 @@ class WindowActionPanelState extends State<WindowActionPanel>
                     isClose: false,
                   )),
               Offstage(
-                  offstage: !widget.showMaximize || Platform.isMacOS,
+                  offstage: !widget.showMaximize || isMacOS,
                   child: Obx(() => ActionIcon(
                         message: stateGlobal.isMaximized.isTrue
                             ? 'Restore'
@@ -690,11 +691,13 @@ class WindowActionPanelState extends State<WindowActionPanel>
                         icon: stateGlobal.isMaximized.isTrue
                             ? IconFont.restore
                             : IconFont.max,
-                        onTap: _toggleMaximize,
+                        onTap: bind.isIncomingOnly() && isInHomePage()
+                            ? null
+                            : _toggleMaximize,
                         isClose: false,
                       ))),
               Offstage(
-                  offstage: !widget.showClose || Platform.isMacOS,
+                  offstage: !widget.showClose || isMacOS,
                   child: ActionIcon(
                     message: 'Close',
                     icon: IconFont.close,
@@ -862,6 +865,7 @@ class _ListView extends StatelessWidget {
                   label: labelGetter == null
                       ? Rx<String>(tab.label)
                       : labelGetter!(tab.label),
+                  tabType: controller.tabType,
                   selectedIcon: tab.selectedIcon,
                   unselectedIcon: tab.unselectedIcon,
                   closable: tab.closable,
@@ -893,6 +897,7 @@ class _Tab extends StatefulWidget {
   final int index;
   final String tabInfoKey;
   final Rx<String> label;
+  final DesktopTabType tabType;
   final IconData? selectedIcon;
   final IconData? unselectedIcon;
   final bool closable;
@@ -911,6 +916,7 @@ class _Tab extends StatefulWidget {
     required this.index,
     required this.tabInfoKey,
     required this.label,
+    required this.tabType,
     this.selectedIcon,
     this.unselectedIcon,
     this.tabBuilder,
@@ -950,7 +956,9 @@ class _TabState extends State<_Tab> with RestorationMixin {
       return ConstrainedBox(
           constraints: BoxConstraints(maxWidth: widget.maxLabelWidth ?? 200),
           child: Tooltip(
-            message: translate(widget.label.value),
+            message: widget.tabType == DesktopTabType.main
+                ? ''
+                : translate(widget.label.value),
             child: Text(
               translate(widget.label.value),
               textAlign: TextAlign.center,
@@ -1106,7 +1114,7 @@ class _CloseButton extends StatelessWidget {
 class ActionIcon extends StatefulWidget {
   final String? message;
   final IconData icon;
-  final Function() onTap;
+  final GestureTapCallback? onTap;
   final bool isClose;
   final double iconSize;
   final double boxSize;
@@ -1115,7 +1123,7 @@ class ActionIcon extends StatefulWidget {
       {Key? key,
       this.message,
       required this.icon,
-      required this.onTap,
+      this.onTap,
       this.isClose = false,
       this.iconSize = _kActionIconSize,
       this.boxSize = _kTabBarHeight - 1})
@@ -1139,24 +1147,30 @@ class _ActionIconState extends State<ActionIcon> {
     return Tooltip(
       message: widget.message != null ? translate(widget.message!) : "",
       waitDuration: const Duration(seconds: 1),
-      child: Obx(
-        () => InkWell(
-          hoverColor: widget.isClose
-              ? const Color.fromARGB(255, 196, 43, 28)
-              : MyTheme.tabbar(context).hoverColor,
-          onHover: (value) => hover.value = value,
-          onTap: widget.onTap,
-          child: SizedBox(
-            height: widget.boxSize,
-            width: widget.boxSize,
-            child: Icon(
-              widget.icon,
-              color: hover.value && widget.isClose
-                  ? Colors.white
-                  : MyTheme.tabbar(context).unSelectedIconColor,
-              size: widget.iconSize,
-            ),
-          ),
+      child: InkWell(
+        hoverColor: widget.isClose
+            ? const Color.fromARGB(255, 196, 43, 28)
+            : MyTheme.tabbar(context).hoverColor,
+        onHover: (value) => hover.value = value,
+        onTap: widget.onTap,
+        child: SizedBox(
+          height: widget.boxSize,
+          width: widget.boxSize,
+          child: widget.onTap == null
+              ? Icon(
+                  widget.icon,
+                  color: Colors.grey,
+                  size: widget.iconSize,
+                )
+              : Obx(
+                  () => Icon(
+                    widget.icon,
+                    color: hover.value && widget.isClose
+                        ? Colors.white
+                        : MyTheme.tabbar(context).unSelectedIconColor,
+                    size: widget.iconSize,
+                  ),
+                ),
         ),
       ),
     );

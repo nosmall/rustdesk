@@ -235,7 +235,7 @@ pub struct Connection {
     auto_disconnect_timer: Option<(Instant, u64)>,
     authed_conn_id: Option<self::raii::AuthedConnID>,
     file_remove_log_control: FileRemoveLogControl,
-    #[cfg(feature = "gpucodec")]
+    #[cfg(feature = "vram")]
     supported_encoding_flag: (bool, Option<bool>),
     services_subed: bool,
     delayed_read_dir: Option<(String, bool)>,
@@ -386,7 +386,7 @@ impl Connection {
             auto_disconnect_timer: None,
             authed_conn_id: None,
             file_remove_log_control: FileRemoveLogControl::new(id),
-            #[cfg(feature = "gpucodec")]
+            #[cfg(feature = "vram")]
             supported_encoding_flag: (false, None),
             services_subed: false,
             delayed_read_dir: None,
@@ -691,7 +691,7 @@ impl Connection {
                         }
                     }
                     conn.file_remove_log_control.on_timer().drain(..).map(|x| conn.send_to_cm(x)).count();
-                    #[cfg(feature = "gpucodec")]
+                    #[cfg(feature = "vram")]
                     conn.update_supported_encoding();
                 }
                 _ = test_delay_timer.tick() => {
@@ -955,6 +955,13 @@ impl Connection {
         log::debug!("#{} Connection opened from {}.", self.inner.id, addr);
         if !self.check_whitelist(&addr).await {
             return false;
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if crate::is_server() && Config::get_option("allow-only-conn-window-open") == "Y" {
+            if !crate::check_process("", !crate::platform::is_root()) {
+                self.send_login_error("The main window is not open").await;
+                return false;
+            }
         }
         self.ip = addr.ip().to_string();
         let mut msg_out = Message::new();
@@ -1750,8 +1757,8 @@ impl Connection {
                 return true;
             }
             if let Some(totp) = self.require_2fa.as_ref() {
-                if let Ok(code) = totp.generate_current() {
-                    if tfa.code == code {
+                if let Ok(res) = totp.check_current(&tfa.code) {
+                    if res {
                         self.update_failure(failure, true, 1);
                         self.require_2fa.take();
                         self.send_logon_response().await;
@@ -3090,9 +3097,9 @@ impl Connection {
             .map(|t| t.0 = Instant::now());
     }
 
-    #[cfg(feature = "gpucodec")]
+    #[cfg(feature = "vram")]
     fn update_supported_encoding(&mut self) {
-        let not_use = Some(scrap::gpucodec::GpuEncoder::not_use());
+        let not_use = Some(scrap::vram::VRamEncoder::not_use());
         if !self.authorized
             || self.supported_encoding_flag.0 && self.supported_encoding_flag.1 == not_use
         {
